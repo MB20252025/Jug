@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>Jug · Glass & Measurements</title>
+    <style>
+        * { box-sizing: border-box; user-select: none; margin: 0; padding: 0; }
+        body {
+            background: #2b2520;
+            background-image: radial-gradient(circle at 20% 30%, #3f352e 5%, #1f1a15 90%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-family: 'Segoe UI', Arial, sans-serif;
+            padding: 20px;
+            margin: 0;
+        }
+        .card {
+            background: rgba(30, 25, 20, 0.7);
+            backdrop-filter: blur(4px);
+            border-radius: 40px 40px 30px 30px;
+            padding: 25px 30px 30px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.8), 0 0 0 1px #b48d64;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            max-width: 700px;
+            width: 100%;
+        }
+        h1 { font-weight: 400; color: #fad7a8; text-shadow: 0 2px 8px #2d1f13; font-size: 2rem; letter-spacing: 1px; margin-bottom: 6px; }
+        .sub { color: #dbbc93; background: #1f1a15b8; padding: 4px 22px; border-radius: 40px; border: 1px solid #b48d64; font-size: 1rem; margin-bottom: 16px; }
+        canvas {
+            display: block;
+            width: 100%;
+            height: auto;
+            max-height: 60vh;
+            border-radius: 20px;
+            background: #1e1813;
+            box-shadow: inset 0 0 30px #0a0705, 0 8px 20px black;
+            border: 2px solid #b48d64;
+            touch-action: none;
+        }
+        .controls {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 12px;
+            margin: 18px 0 8px;
+        }
+        button {
+            padding: 8px 28px;
+            font-size: 1rem;
+            font-weight: 600;
+            background: #4f3a28;
+            border: 2px solid #cbab82;
+            color: #f7e9d3;
+            border-radius: 40px;
+            cursor: pointer;
+            transition: all 0.15s;
+            box-shadow: 0 3px 0 #2b1d12;
+            letter-spacing: 0.5px;
+            flex: 1 1 auto;
+            min-width: 110px;
+        }
+        button:hover { background: #73583e; border-color: #f5cf9e; transform: translateY(-2px); box-shadow: 0 5px 0 #2b1d12; }
+        button:active { transform: translateY(2px); box-shadow: 0 1px 0 #2b1d12; }
+        .status { font-size: 1.1rem; background: #1f1a15b8; padding: 4px 24px; border-radius: 30px; border: 1px solid #b48d64; color: #f0dcc0; margin-top: 6px; }
+        .note { font-style: italic; color: #cfa97c; font-size: 0.7rem; margin-top: 6px; opacity: 0.7; }
+        @media (max-width: 480px) {
+            .card { padding: 15px; }
+            h1 { font-size: 1.6rem; }
+            button { min-width: 80px; padding: 6px 16px; font-size: 0.9rem; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="card">
+    <h1>☕ The Coffee Jug</h1>
+    <div class="sub">glass reflection · 10L scale</div>
+
+    <canvas id="jugCanvas"></canvas>
+
+    <div class="controls">
+        <button id="fillBtn">⬆ Fill</button>
+        <button id="pourBtn">⬇ Pour</button>
+        <button id="resetBtn">⟲ Reset</button>
+    </div>
+
+    <div class="status" id="statusDisplay">Level: 0%</div>
+    <div class="note" id="debugNote">loading image…</div>
+</div>
+
+<script>
+(function() {
+    // ─── CONFIG ──────────────────────────────────────────────────────
+    const IMAGE_PATH = 'jug.png';
+    const ANIMATION_DURATION = 800;
+    const MAX_LEVEL = 0.85;          // max fill height (0–1)
+    const MAX_LITERS = 10;            // measurement scale
+
+    // ─── DOM ──────────────────────────────────────────────────────────
+    const canvas = document.getElementById('jugCanvas');
+    const ctx = canvas.getContext('2d');
+    const statusEl = document.getElementById('statusDisplay');
+    const debugEl = document.getElementById('debugNote');
+
+    // ─── STATE ──────────────────────────────────────────────────────
+    let currentLevel = 0;
+    let isAnimating = false;
+    let isPouring = false;
+    let img = null;
+    let interiorMask = null;   // Uint8Array: 1 = inside, 0 = outside
+    let maskReady = false;
+    // Stream is permanently OFF – we only do level changes
+    const streamEnabled = false;
+
+    // ─── FLOOD FILL MASK ─────────────────────────────────────────────
+    function computeInteriorMask(imageData, w, h) {
+        const data = imageData.data;
+        const mask = new Uint8Array(w * h);
+
+        let seedX = Math.floor(w / 2);
+        let seedY = Math.floor(h / 2);
+        let found = false;
+        const searchRadius = Math.min(w, h) * 0.3;
+
+        for (let r = 0; r < searchRadius && !found; r += 2) {
+            for (let angle = 0; angle < Math.PI * 2 && !found; angle += 0.2) {
+                const px = Math.floor(w/2 + r * Math.cos(angle));
+                const py = Math.floor(h/2 + r * Math.sin(angle));
+                if (px < 0 || px >= w || py < 0 || py >= h) continue;
+                const idx = (py * w + px) * 4;
+                if (data[idx + 3] < 128) {
+                    seedX = px;
+                    seedY = py;
+                    found = true;
+                }
+            }
+        }
+
+        if (!found) {
+            seedX = Math.floor(w / 2);
+            seedY = Math.floor(h / 2);
+        }
+
+        const queue = [];
+        const visited = new Uint8Array(w * h);
+        const startIdx = seedY * w + seedX;
+        queue.push(seedX, seedY);
+        visited[startIdx] = 1;
+
+        while (queue.length > 0) {
+            const cx = queue.shift();
+            const cy = queue.shift();
+            const idx = cy * w + cx;
+            mask[idx] = 1;
+
+            const neighbors = [
+                [cx-1, cy], [cx+1, cy], [cx, cy-1], [cx, cy+1]
+            ];
+            for (let n of neighbors) {
+                const nx = n[0], ny = n[1];
+                if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+                const nIdx = ny * w + nx;
+                if (visited[nIdx]) continue;
+                const alpha = data[(nIdx) * 4 + 3];
+                if (alpha < 128) {
+                    visited[nIdx] = 1;
+                    queue.push(nx, ny);
+                }
+            }
+        }
+
+        debugEl.textContent = `✅ Mask ready (${mask.reduce((a,b)=>a+b,0)} px)`;
+        return mask;
+    }
+
+    // ─── LOAD ────────────────────────────────────────────────────────
+    function initCanvas() {
+        img = new Image();
+        img.onload = function() {
+            canvas.width = img.width;
+            canvas.height = img.height;
+            canvas.style.aspectRatio = img.width / img.height;
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(img, 0, 0);
+            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            interiorMask = computeInteriorMask(imageData, canvas.width, canvas.height);
+            maskReady = true;
+
+            currentLevel = 0;
+            isPouring = false;
+            drawScene();
+        };
+        img.onerror = function() {
+            debugEl.textContent = '❌ Failed to load "' + IMAGE_PATH + '".';
+            console.error('Image not found:', IMAGE_PATH);
+        };
+        img.src = IMAGE_PATH;
+    }
+
+    // ─── DRAW ─────────────────────────────────────────────────────────
+    function drawScene(level = currentLevel, pouring = isPouring) {
+        const w = canvas.width;
+        const h = canvas.height;
+        ctx.clearRect(0, 0, w, h);
+
+        if (!img || !maskReady) return;
+
+        // 1. Draw the jug (base)
+        ctx.drawImage(img, 0, 0, w, h);
+
+        // 2. Draw coffee liquid (will be masked)
+        const liquidHeight = level * h;
+        if (liquidHeight > 0) {
+            const grad = ctx.createLinearGradient(0, h - liquidHeight, 0, h);
+            grad.addColorStop(0, '#8b5d37');
+            grad.addColorStop(0.4, '#6b3e1f');
+            grad.addColorStop(0.8, '#4d2c15');
+            grad.addColorStop(1, '#2f1a0c');
+            ctx.fillStyle = grad;
+            ctx.fillRect(0, h - liquidHeight, w, liquidHeight);
+
+            // Highlight on coffee surface
+            const highlightY = h - liquidHeight;
+            ctx.beginPath();
+            ctx.ellipse(w * 0.3, highlightY + 2, w * 0.25, 4, 0, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(255, 220, 170, 0.3)';
+            ctx.fill();
+
+            // Apply mask to coffee + highlight
+            const imageData = ctx.getImageData(0, 0, w, h);
+            const data = imageData.data;
+            for (let i = 0; i < data.length; i += 4) {
+                const px = (i / 4) % w;
+                const py = Math.floor((i / 4) / w);
+                const maskIdx = py * w + px;
+                if (interiorMask[maskIdx] === 0) {
+                    data[i + 3] = 0;
+                }
+            }
+            ctx.putImageData(imageData, 0, 0);
+        }
+
+        // 3. Draw glass reflection effect (masked)
+        drawGlassEffect(w, h);
+
+        // 4. Redraw the jug on top – restores outline, handle, spout
+        ctx.drawImage(img, 0, 0, w, h);
+
+        // 5. Draw measuring lines (on top of everything, inside the jug)
+        drawMeasurements(w, h);
+
+        // Update status
+        const percent = Math.round((level / MAX_LEVEL) * 100);
+        statusEl.textContent = `Level: ${Math.min(percent, 100)}%`;
+    }
+
+    // ─── GLASS REFLECTION ────────────────────────────────────────────
+    function drawGlassEffect(w, h) {
+        // Create a subtle white gradient on the left side
+        const grad = ctx.createLinearGradient(0, 0, w * 0.35, 0);
+        grad.addColorStop(0, 'rgba(255, 255, 255, 0.15)');
+        grad.addColorStop(0.5, 'rgba(255, 255, 255, 0.05)');
+        grad.addColorStop(1, 'rgba(255, 255, 255, 0)');
+
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, w, h);
+
+        // Apply the interior mask to the glass effect
+        const imageData = ctx.getImageData(0, 0, w, h);
+        const data = imageData.data;
+        for (let i = 0; i < data.length; i += 4) {
+            const px = (i / 4) % w;
+            const py = Math.floor((i / 4) / w);
+            const maskIdx = py * w + px;
+            if (interiorMask[maskIdx] === 0) {
+                data[i + 3] = 0;
+            }
+        }
+        ctx.putImageData(imageData, 0, 0);
+    }
+
+    // ─── MEASURING LINES ─────────────────────────────────────────────
+    function drawMeasurements(w, h) {
+        const numLines = MAX_LITERS; // 10 lines
+        const xPos = w * 0.88;        // right side, inside jug
+        const tickLength = 15;
+
+        ctx.save();
+        ctx.font = `bold ${Math.max(12, w * 0.025)}px Arial`;
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'middle';
+        ctx.shadowColor = 'rgba(0,0,0,0.7)';
+        ctx.shadowBlur = 4;
+
+        for (let L = 1; L <= numLines; L++) {
+            // fraction of total height (0 = bottom, MAX_LEVEL = top)
+            const fraction = (L / numLines) * MAX_LEVEL;
+            const y = h - fraction * h;
+
+            // Only draw if within the jug (coordinate check using mask)
+            // We'll draw anyway, but we can check if that pixel is inside
+            // To avoid drawing outside, we can check the mask at (xPos, y)
+            // But we'll just draw with a clip using the mask? Easier: we'll draw
+            // and then mask the entire drawing? Not necessary.
+
+            // Draw a horizontal tick
+            ctx.beginPath();
+            ctx.moveTo(xPos, y);
+            ctx.lineTo(xPos - tickLength, y);
+            ctx.strokeStyle = 'rgba(255, 240, 220, 0.7)';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+
+            // Draw label
+            ctx.fillStyle = 'rgba(255, 240, 220, 0.8)';
+            ctx.shadowColor = 'rgba(0,0,0,0.8)';
+            ctx.shadowBlur = 6;
+            ctx.fillText(L + 'L', xPos - tickLength - 6, y);
+            ctx.shadowBlur = 0;
+        }
+
+        ctx.restore();
+    }
+
+    // ─── ANIMATION ──────────────────────────────────────────────────
+    function animateTo(target, callback) {
+        if (isAnimating) return;
+        const start = currentLevel;
+        const end = Math.min(Math.max(target, 0), MAX_LEVEL);
+        if (Math.abs(start - end) < 0.001) {
+            currentLevel = end;
+            drawScene();
+            if (callback) callback();
+            return;
+        }
+
+        isAnimating = true;
+        const startTime = performance.now();
+
+        function step(time) {
+            const elapsed = time - startTime;
+            const progress = Math.min(elapsed / ANIMATION_DURATION, 1);
+            const eased = progress < 0.5
+                ? 4 * progress * progress * progress
+                : 1 - Math.pow(-2 * progress + 2, 3) / 2;
+            currentLevel = start + (end - start) * eased;
+            drawScene(currentLevel, isPouring);
+
+            if (progress < 1) {
+                requestAnimationFrame(step);
+            } else {
+                currentLevel = end;
+                isAnimating = false;
+                drawScene(currentLevel, isPouring);
+                if (callback) callback();
+            }
+        }
+        requestAnimationFrame(step);
+    }
+
+    // ─── ACTIONS ────────────────────────────────────────────────────
+    function fillCoffee() {
+        if (isAnimating || currentLevel >= MAX_LEVEL - 0.01) return;
+        isPouring = false;
+        animateTo(MAX_LEVEL);
+    }
+
+    function pourCoffee() {
+        if (isAnimating || currentLevel < 0.02) return;
+        isPouring = true;
+        animateTo(0, function() {
+            isPouring = false;
+            drawScene(0, false);
+        });
+    }
+
+    function resetJug() {
+        if (isAnimating) return;
+        isPouring = false;
+        currentLevel = 0;
+        drawScene(0, false);
+    }
+
+    // ─── WIRING ──────────────────────────────────────────────────────
+    document.getElementById('fillBtn').addEventListener('click', fillCoffee);
+    document.getElementById('pourBtn').addEventListener('click', pourCoffee);
+    document.getElementById('resetBtn').addEventListener('click', resetJug);
+
+    window.addEventListener('resize', function() {
+        if (maskReady) drawScene(currentLevel, isPouring);
+    });
+
+    initCanvas();
+})();
+</script>
+</body>
+</html>
